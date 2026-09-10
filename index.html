@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>Prueba Cofre Teclado Universal</title>
+  <title>Cofre Sonoro Minecraft — Con Debounce Anti-Rebote</title>
   <style>
     body {
       font-family: system-ui, sans-serif;
@@ -41,13 +41,13 @@
       color: #00ff88;
       min-width: 320px;
       text-align: center;
+      white-space: pre-line;
     }
   </style>
 </head>
 <body>
 
   <div id="estado" class="abierto">Cofre Abierto</div>
-
   <div id="consola">Haz clic en la pantalla y presiona tu tecla</div>
 
   <div>
@@ -58,13 +58,22 @@
 
   <script>
     const sndCerrar = new Audio('https://raw.githubusercontent.com/InventivetalentDev/minecraft-assets/1.19/assets/minecraft/sounds/block/chest/close.ogg');
-    const sndAbrir = new Audio('https://raw.githubusercontent.com/InventivetalentDev/minecraft-assets/1.19/assets/minecraft/sounds/block/chest/open.ogg');
+    const sndAbrir  = new Audio('https://raw.githubusercontent.com/InventivetalentDev/minecraft-assets/1.19/assets/minecraft/sounds/block/chest/open.ogg');
 
     const estado = document.getElementById('estado');
     const consola = document.getElementById('consola');
 
     let teclaDefinida = null;
-    let contactoCerrado = false;
+    let contactoCerrado = false;   // estado LÓGICO ya confirmado (post-debounce)
+
+    // --- Parámetros de debounce ---
+    // Tiempo mínimo (ms) que debe pasar entre un evento válido y el siguiente
+    // para que se considere "real" y no un rebote del contacto mecánico.
+    const DEBOUNCE_MS = 120;
+
+    let ultimoEventoValidoTs = 0;   // timestamp del último cambio de estado aceptado
+    let timerDown = null;           // temporizador pendiente para keydown
+    let timerUp = null;             // temporizador pendiente para keyup
 
     function probarCerrar() {
       sndCerrar.currentTime = 0;
@@ -79,44 +88,90 @@
     function reiniciarTecla() {
       teclaDefinida = null;
       contactoCerrado = false;
+      ultimoEventoValidoTs = 0;
+      clearTimeout(timerDown);
+      clearTimeout(timerUp);
       estado.textContent = 'Cofre Abierto';
       estado.className = 'abierto';
       consola.textContent = "Configuración reiniciada. Presiona la tecla que usarás.";
     }
 
+    function confirmarCierre() {
+      // Se ejecuta solo si, tras DEBOUNCE_MS, la tecla sigue abajo
+      // (ver lógica en keydown: cancelamos este timer si llega un keyup antes)
+      if (contactoCerrado) return; // ya estaba cerrado, no repetir
+      contactoCerrado = true;
+      ultimoEventoValidoTs = performance.now();
+
+      estado.textContent = 'Cofre Cerrado';
+      estado.className = 'cerrado';
+      consola.textContent = `Cofre CERRADO (confirmado) -> ${teclaDefinida}`;
+
+      sndCerrar.currentTime = 0;
+      sndCerrar.play().catch(err => console.log(err));
+    }
+
+    function confirmarApertura() {
+      if (!contactoCerrado) return; // ya estaba abierto, no repetir
+      contactoCerrado = false;
+      ultimoEventoValidoTs = performance.now();
+
+      estado.textContent = 'Cofre Abierto';
+      estado.className = 'abierto';
+      consola.textContent = `Cofre ABIERTO (confirmado) -> ${teclaDefinida}`;
+
+      sndAbrir.currentTime = 0;
+      sndAbrir.play().catch(err => console.log(err));
+    }
+
     window.addEventListener('keydown', (e) => {
-      // Si todavía no hay una tecla definida, la primera que se presione se queda guardada
+      // Primera pulsación define automáticamente qué tecla usar
       if (!teclaDefinida) {
-        teclaDefinida = e.code; // Usamos e.code para que sea independiente del idioma/distribución
+        teclaDefinida = e.code;
         consola.textContent = `¡Tecla asignada! Usando: ${e.code} (${e.key})`;
         return;
       }
 
-      consola.textContent = `Pulsado -> code: ${e.code} | key: ${e.key}`;
+      if (e.code !== teclaDefinida) return;
 
-      // Si la tecla presionada coincide con la que se definió al inicio
-      if (e.code === teclaDefinida && !contactoCerrado) {
-        contactoCerrado = true;
-        estado.textContent = 'Cofre Cerrado';
-        estado.className = 'cerrado';
+      // El navegador dispara keydown repetidamente mientras la tecla
+      // sigue presionada (auto-repeat) o por rebote del contacto.
+      // Si ya hay un timer de cierre pendiente o ya está cerrado, ignoramos.
+      if (contactoCerrado) return;
 
-        sndCerrar.currentTime = 0;
-        sndCerrar.play().catch(err => console.log(err));
-      }
+      // Si había un timer de APERTURA pendiente (por un rebote que soltó
+      // brevemente el contacto), lo cancelamos: significa que fue rebote,
+      // no una apertura real.
+      clearTimeout(timerUp);
+      timerUp = null;
+
+      // Si ya hay un timer de cierre esperando, no crear otro
+      if (timerDown) return;
+
+      // Esperamos DEBOUNCE_MS para confirmar que el contacto se quedó
+      // realmente cerrado (no fue solo un rebote pasajero)
+      timerDown = setTimeout(() => {
+        timerDown = null;
+        confirmarCierre();
+      }, DEBOUNCE_MS);
     });
 
     window.addEventListener('keyup', (e) => {
-      consola.textContent = `Soltado -> code: ${e.code} | key: ${e.key}`;
+      if (!teclaDefinida || e.code !== teclaDefinida) return;
 
-      // Si se suelta la tecla asignada
-      if (teclaDefinida && e.code === teclaDefinida) {
-        contactoCerrado = false;
-        estado.textContent = 'Cofre Abierto';
-        estado.className = 'abierto';
+      if (!contactoCerrado) return; // ya estaba abierto, nada que hacer
 
-        sndAbrir.currentTime = 0;
-        sndAbrir.play().catch(err => console.log(err));
-      }
+      // Cancelamos cualquier timer de cierre pendiente que no se
+      // haya confirmado todavía (rebote rapidísimo)
+      clearTimeout(timerDown);
+      timerDown = null;
+
+      if (timerUp) return;
+
+      timerUp = setTimeout(() => {
+        timerUp = null;
+        confirmarApertura();
+      }, DEBOUNCE_MS);
     });
   </script>
 </body>
